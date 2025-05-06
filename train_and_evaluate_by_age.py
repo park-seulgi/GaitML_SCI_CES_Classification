@@ -1,56 +1,63 @@
-# 5. Model Training and Evaluation by Age Group
 
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_predict
+from sklearn.model_selection import StratifiedKFold, GridSearchCV, cross_val_predict
 from sklearn.preprocessing import MinMaxScaler, label_binarize
 from sklearn.feature_selection import SelectFromModel
-from sklearn.metrics import (roc_curve, roc_auc_score, accuracy_score,
-                             precision_score, recall_score, f1_score, confusion_matrix, ConfusionMatrixDisplay)
+from sklearn.metrics import (roc_curve, auc, roc_auc_score, accuracy_score, 
+                             precision_score, recall_score, f1_score, confusion_matrix)
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.svm import SVC
 from xgboost import XGBClassifier
 from sklearn.inspection import permutation_importance
+from itertools import cycle
 import matplotlib.pyplot as plt
 import seaborn as sns
-from itertools import cycle
 
 # Load dataset
-file_path = r"C:\Users\sg010\Desktop\wlsWkdlqslek.csv"
+file_path = "./data/your_dataset.csv"
 df = pd.read_csv(file_path)
-df['Sex'] = df['Sex'].map({'남': 0, '여': 1})
+
+# Encode categorical variable
+df['Sex'] = df['Sex'].map({'male': 0, 'female': 1})
 
 # Split by age group
-under_60_group = df[df['Age'] < 60]
-over_60_group = df[df['Age'] >= 60]
+df_under60 = df[df['Age'] < 60].copy()
+df_over60 = df[df['Age'] >= 60].copy()
 
-# Choose group (change here as needed)
-age_group_x = over_60_group.drop(['target', 'Age'], axis=1)
-age_group_y = over_60_group['target']
+# Define target and features
+def prepare_group(df_group):
+    data_y = df_group['target']
+    data_x = df_group.drop(['target', 'Age'], axis=1)
 
-# Remove outliers
-iso_forest = IsolationForest(contamination=0.01, random_state=50, n_jobs=-1)
-outliers_pred = iso_forest.fit_predict(age_group_x)
-age_group_x = age_group_x.iloc[outliers_pred == 1]
-age_group_y = age_group_y.iloc[outliers_pred == 1]
+    # Outlier removal
+    iso_forest = IsolationForest(contamination=0.01, random_state=50, n_jobs=-1)
+    outliers_pred = iso_forest.fit_predict(data_x)
+    data_x_cleaned = data_x.iloc[outliers_pred == 1]
+    data_y_cleaned = data_y.iloc[outliers_pred == 1]
 
-# Feature scaling
-scaler = MinMaxScaler()
-age_group_x_scaled = scaler.fit_transform(age_group_x)
-age_group_x = pd.DataFrame(age_group_x_scaled, columns=age_group_x.columns)
+    # Feature scaling
+    scaler = MinMaxScaler()
+    data_x_scaled = scaler.fit_transform(data_x_cleaned)
+    data_x_cleaned = pd.DataFrame(data_x_scaled, columns=data_x_cleaned.columns)
 
-# Feature selection
-rf_selector = RandomForestClassifier(n_estimators=200, random_state=50, n_jobs=-1)
-rf_selector.fit(age_group_x, age_group_y)
-selector = SelectFromModel(rf_selector, prefit=True)
-age_group_x = pd.DataFrame(selector.transform(age_group_x),
-                            columns=age_group_x.columns[selector.get_support()])
-selected_features = age_group_x.columns
+    # Feature selection
+    rf_selector = RandomForestClassifier(n_estimators=200, random_state=50, n_jobs=-1)
+    rf_selector.fit(data_x_cleaned, data_y_cleaned)
+    selector = SelectFromModel(rf_selector, prefit=True)
+    selected_x = pd.DataFrame(selector.transform(data_x_cleaned), columns=data_x_cleaned.columns[selector.get_support()])
 
-# Cross-validation setting
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=50)
+    return selected_x, data_y_cleaned, selected_x.columns
 
-# Hyperparameter grids
+# Define models and hyperparameter grids
+Ran_state = 50
+k = 5
+cv = StratifiedKFold(n_splits=k, shuffle=True, random_state=Ran_state)
+
+SVM = SVC(class_weight='balanced', probability=True, random_state=Ran_state)
+RF = RandomForestClassifier(class_weight='balanced', random_state=Ran_state, n_jobs=-1)
+XGB = XGBClassifier(objective='multi:softprob', random_state=Ran_state, n_jobs=-1)
+
 SVM_grid = {
     'C': [0.1, 10, 80],
     'gamma': ['scale', 0.1, 1, 50],
@@ -73,87 +80,63 @@ XGB_grid = {
     'subsample': [0.3, 0.8, 1.0],
     'colsample_bytree': [0.8, 1.0],
     'gamma': [0, 0.1],
-}
+}	
 
-models = [SVC(class_weight='balanced', probability=True, random_state=50),
-          RandomForestClassifier(class_weight='balanced', random_state=50, n_jobs=-1),
-          XGBClassifier(objective='multi:softprob', random_state=50, n_jobs=-1)]
-grids = [SVM_grid, RF_grid, XGB_grid]
-model_names = ['SVM', 'RF', 'XGB']
+def gridsearch(gridlist, classlist, data_x, data_y, cv):
+    best_estimators = []
+    for grid, clf in zip(gridlist, classlist):
+        grid_search = GridSearchCV(clf, grid, scoring='roc_auc_ovr', cv=cv, n_jobs=-1)
+        grid_search.fit(data_x, data_y)
+        best_estimators.append(grid_search.best_estimator_)
+    return best_estimators
 
-# Grid search
-best_models = []
-for model, grid in zip(models, grids):
-    gs = GridSearchCV(model, grid, scoring='roc_auc_ovr', cv=cv, n_jobs=-1)
-    gs.fit(age_group_x, age_group_y)
-    best_models.append(gs.best_estimator_)
+def evaluate_group(data_x, data_y, selected_features):
+    best_classlist = gridsearch([SVM_grid, RF_grid, XGB_grid], [SVM, RF, XGB], data_x, data_y, cv)
 
-# Cross-validated evaluation
-results = []
-for model, name in zip(best_models, model_names):
-    fold_scores = {'Model': name}
-    accs, precs, recs, f1s, aucs, tprs, tnrs = [], [], [], [], [], [], []
+    metrics = {'Model': [], 'Accuracy': [], 'Precision': [], 'Recall': [], 'F1-score': [], 'AUC': [], 'TPR': [], 'TNR': []}
+    std_metrics = {key: [] for key in list(metrics.keys())[1:]}
 
-    for train_idx, val_idx in cv.split(age_group_x, age_group_y):
-        X_train, X_val = age_group_x.iloc[train_idx], age_group_x.iloc[val_idx]
-        y_train, y_val = age_group_y.iloc[train_idx], age_group_y.iloc[val_idx]
-        model.fit(X_train, y_train)
-        preds = model.predict(X_val)
-        probs = model.predict_proba(X_val)
+    for model, name in zip(best_classlist, ['SVM', 'RF', 'XGB']):
+        fold_results = {key: [] for key in metrics.keys() if key != 'Model'}
+        for fold, (train_idx, val_idx) in enumerate(cv.split(data_x, data_y), 1):
+            model.fit(data_x.iloc[train_idx], data_y.iloc[train_idx])
+            pred = model.predict(data_x.iloc[val_idx])
+            y_score = model.predict_proba(data_x.iloc[val_idx])
+            acc = accuracy_score(data_y.iloc[val_idx], pred)
+            prec = precision_score(data_y.iloc[val_idx], pred, average='weighted')
+            rec = recall_score(data_y.iloc[val_idx], pred, average='weighted')
+            f1 = f1_score(data_y.iloc[val_idx], pred, average='weighted')
+            auc_score = roc_auc_score(label_binarize(data_y.iloc[val_idx], classes=np.unique(data_y)), y_score, multi_class='ovr')
+            cm = confusion_matrix(data_y.iloc[val_idx], pred)
+            FP = cm.sum(axis=0) - np.diag(cm)
+            FN = cm.sum(axis=1) - np.diag(cm)
+            TP = np.diag(cm)
+            TN = cm.sum() - (FP + FN + TP)
+            TPR = TP / (TP + FN)
+            TNR = TN / (TN + FP)
+            fold_results['Accuracy'].append(acc)
+            fold_results['Precision'].append(prec)
+            fold_results['Recall'].append(rec)
+            fold_results['F1-score'].append(f1)
+            fold_results['AUC'].append(auc_score)
+            fold_results['TPR'].append(np.mean(TPR))
+            fold_results['TNR'].append(np.mean(TNR))
 
-        accs.append(accuracy_score(y_val, preds))
-        precs.append(precision_score(y_val, preds, average='weighted'))
-        recs.append(recall_score(y_val, preds, average='weighted'))
-        f1s.append(f1_score(y_val, preds, average='weighted'))
-        aucs.append(roc_auc_score(label_binarize(y_val, classes=np.unique(age_group_y)), probs, multi_class='ovr'))
+        for key in fold_results:
+            metrics[key].append(np.mean(fold_results[key]))
+            std_metrics[key].append(np.std(fold_results[key]))
+        metrics['Model'].append(name)
 
-        cm = confusion_matrix(y_val, preds)
-        TP = np.diag(cm)
-        FP = cm.sum(axis=0) - TP
-        FN = cm.sum(axis=1) - TP
-        TN = cm.sum() - (FP + FN + TP)
+    performance_metrics = pd.DataFrame(metrics)
+    std_performance_metrics = pd.DataFrame(std_metrics, index=performance_metrics['Model'])
+    return performance_metrics, std_performance_metrics, best_classlist
 
-        TPR = TP / (TP + FN)
-        TNR = TN / (TN + FP)
-        tprs.append(np.mean(TPR))
-        tnrs.append(np.mean(TNR))
+# Run for each group
+under60_x, under60_y, under60_features = prepare_group(df_under60)
+over60_x, over60_y, over60_features = prepare_group(df_over60)
 
-    fold_scores['Accuracy'] = np.mean(accs)
-    fold_scores['Precision'] = np.mean(precs)
-    fold_scores['Recall'] = np.mean(recs)
-    fold_scores['F1-score'] = np.mean(f1s)
-    fold_scores['AUC'] = np.mean(aucs)
-    fold_scores['TPR'] = np.mean(tprs)
-    fold_scores['TNR'] = np.mean(tnrs)
+perf_under60, std_under60, models_under60 = evaluate_group(under60_x, under60_y, under60_features)
+perf_over60, std_over60, models_over60 = evaluate_group(over60_x, over60_y, over60_features)
 
-    results.append(fold_scores)
-
-performance_df = pd.DataFrame(results)
-print(performance_df)
-
-# Visualization: Performance heatmap
-plt.figure(figsize=(10, 6))
-sns.heatmap(performance_df.set_index('Model'), annot=True, fmt=".4f", cmap='Greys')
-plt.title('Performance Metrics across Models')
-plt.show()
-
-# Feature importance
-fold_feature_importances = {name: [] for name in model_names}
-for model, name in zip(best_models, model_names):
-    for train_idx, val_idx in cv.split(age_group_x, age_group_y):
-        model.fit(age_group_x.iloc[train_idx], age_group_y.iloc[train_idx])
-        if name in ['RF', 'XGB']:
-            importances = model.feature_importances_
-        else:
-            result = permutation_importance(model, age_group_x.iloc[val_idx], age_group_y.iloc[val_idx],
-                                            n_repeats=5, random_state=50, n_jobs=-1)
-            importances = result.importances_mean
-        fold_feature_importances[name].append(importances)
-
-mean_importances = {name: np.mean(fold_feature_importances[name], axis=0) for name in fold_feature_importances}
-feature_importances_df = pd.DataFrame(mean_importances, index=selected_features)
-
-plt.figure(figsize=(12, 6))
-sns.heatmap(feature_importances_df, annot=True, fmt=".4f", cmap="Greys")
-plt.title("Feature Importances across Models")
-plt.show()
+print("Under 60 Performance Metrics:\n", perf_under60)
+print("\nOver 60 Performance Metrics:\n", perf_over60)
