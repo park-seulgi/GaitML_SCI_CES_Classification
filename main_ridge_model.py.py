@@ -45,14 +45,13 @@ SVM = SVC(class_weight='balanced', probability=True, random_state=Ran_state)
 
 # Hyperparameter grids
 SVM_grid = {
-    'C': [80],
+    'C': [0.1, 10, 80],
     'gamma': ['scale', 0.1, 1, 50],
     'kernel': ['rbf'],
-    'degree': [2, 3]
 }
 
 RF_grid = {
-    'n_estimators': [98, 102],
+    'n_estimators': [50, 100, 200],
     'min_samples_leaf': [1, 2, 4],
     'max_features': ['sqrt', 0.7],
     'bootstrap': [True],
@@ -62,7 +61,7 @@ RF_grid = {
 
 XGB_grid = {
     'n_estimators': [100, 300],
-    'learning_rate': [0.8],
+    'learning_rate': [0.01, 0.1, 0.3, 0.8],
     'max_depth': [7, 8],
     'subsample': [0.3, 0.8, 1.0],
     'colsample_bytree': [0.8, 1.0],
